@@ -30,7 +30,7 @@
    #:image-limits-max-pixels #:image-limits-max-frames #:image-limits-max-bytes
    #:image-limits-max-input-bytes #:*image-limits* #:check-dimensions #:check-frames
    ;; formats
-   #:sniff-format #:register-signature #:*enabled-formats* #:+default-enabled-formats+
+   #:sniff-format #:peek-dimensions #:register-signature #:*enabled-formats* #:+default-enabled-formats+
    ;; conversion / orientation
    #:convert-image #:depth-16-to-8 #:apply-orientation #:exif-orientation
    ;; registry

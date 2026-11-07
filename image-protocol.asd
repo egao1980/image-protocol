@@ -11,6 +11,7 @@
                (:file "types")
                (:file "limits")
                (:file "sniff")
+               (:file "peek")
                (:file "convert")
                (:file "exif")
                (:file "registry")
