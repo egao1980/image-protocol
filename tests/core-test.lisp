@@ -66,3 +66,13 @@
                      (img:image-limit-exceeded (c) (img:image-limit-exceeded-limit c))))))
   (ok (signals (img:check-dimensions 50000 50000 4) 'img:image-limit-exceeded))
   (ok (img:check-dimensions 50000 50000 4 :limits (img:make-image-limits :unlimited t))))
+
+(deftest header-peeking
+  (let ((png (octets (append '(#x89 #x50 #x4e #x47 #x0d #x0a #x1a #x0a 0 0 0 13 73 72 68 82)
+                             '(0 0 #xc3 #x50 0 0 #xc3 #x50 8 2 0 0 0)))))
+    (ok (equal (multiple-value-list (img:peek-dimensions :png png)) '(50000 50000))))
+  (ok (equal (multiple-value-list (img:peek-dimensions :gif (map '(vector (unsigned-byte 8)) #'char-code "GIF89a"))) '(nil)))
+  (ok (equal (multiple-value-list
+              (img:peek-dimensions :jpeg (octets '(#xff #xd8 #xff #xe0 0 4 0 0 #xff #xc0 0 11 8 0 4 0 8 3 0 0))))
+             '(8 4)))
+  (ok (null (img:peek-dimensions :jpeg (octets '(#xff #xd8 1 2 3))))))

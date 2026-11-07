@@ -72,6 +72,11 @@ TRY-NEXT-BACKEND after a decode/encode error, USE-VALUE with a backend."
 (defun %orientation-for (format octets)
   (when (eq format :jpeg) (exif-orientation octets)))
 
+(defun %precheck (format octets limits &key (frames 1))
+  "Refuse oversized images from the header alone, before any backend runs."
+  (multiple-value-bind (w h) (peek-dimensions format octets)
+    (when w (check-dimensions w h 1 :limits limits :format format :frames frames))))
+
 (defun %finish (image format octets orient)
   (%check-image image)
   (unless (image-orientation image)
@@ -86,6 +91,7 @@ EXIF orientation. BACKEND forces a backend."
   (let* ((octets (%read-source source limits))
          (format (%resolve-format octets format))
          (*image-limits* limits))
+    (%precheck format octets limits)
     (flet ((run (b) (%finish (backend-decode b format octets :limits limits) format octets orient)))
       (if backend (run backend) (%with-backends format :decode formats #'run)))))
 
@@ -94,6 +100,7 @@ EXIF orientation. BACKEND forces a backend."
   (let* ((octets (%read-source source limits))
          (format (%resolve-format octets format))
          (*image-limits* limits))
+    (%precheck format octets limits)
     (flet ((run (b)
              (let ((seq (backend-decode b format octets :limits limits :frames t)))
                (check-frames (length (image-sequence-frames seq)) :limits limits :format format)
@@ -108,7 +115,9 @@ EXIF orientation. BACKEND forces a backend."
     (image-sequence-loop-count seq)))
 
 (defparameter +encode-defaults+
-  '((:jpeg :quality 90 :subsampling :420)
+  ;; Subsampling has no default: a backend picks its own unless asked (at the
+  ;; default quality 90, stb uses 4:2:0), so only explicit requests are checked.
+  '((:jpeg :quality 90)
     (:png :compression-level 6)))
 
 (defparameter +encode-options+
@@ -130,7 +139,7 @@ EXIF orientation. BACKEND forces a backend."
 (defun encode-image (image format &rest options &key backend &allow-other-keys)
   "Encode IMAGE as FORMAT → octets. Options: :QUALITY 1–100, :COMPRESSION-LEVEL
 0–9, :SUBSAMPLING (:444 :422 :420), :PROGRESSIVE, :LOOP-COUNT,
-:BACKEND-OPTIONS. Defaults: JPEG quality 90 at 4:2:0, PNG level 6.
+:BACKEND-OPTIONS. Defaults: JPEG quality 90, PNG level 6.
 No metadata is written."
   (%check-image image)
   (let ((options (copy-list options)))

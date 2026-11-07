@@ -18,7 +18,7 @@ Image decoding and encoding for [cl-stack](https://github.com/egao1980/cl-stack)
 | Conversion | Done in the protocol for every backend: BT.601 gray, rounded 16→8, alpha added as 255 |
 | Metadata | EXIF orientation is read (`exif-orientation`) and not applied unless `:orient t` / `apply-orientation` |
 | Animation | `decode-frames` → composited `image-frame`s with `delay-ms`, plus `loop-count`; `map-frames` |
-| Encoding | `:quality :compression-level :subsampling :progressive :loop-count :backend-options`, with defaults JPEG 90 @ 4:2:0 and PNG 6. Unknown keys are errors. An option a backend can't honour gives the warning `image-option-ignored`, or the error `image-unsupported-option` under `*strict-options*`. |
+| Encoding | `:quality :compression-level :subsampling :progressive :loop-count :backend-options`, with defaults JPEG 90 and PNG 6 (subsampling is the backend's unless asked). Unknown keys are errors. An option a backend can't honour gives the warning `image-option-ignored`, or the error `image-unsupported-option` under `*strict-options*`. |
 
 Backends: [`image-backend-stb`](https://github.com/egao1980/image-backend-stb) (native, patched stb) and [`image-backend-lisp`](https://github.com/egao1980/image-backend-lisp) (pure CL).
 
