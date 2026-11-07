@@ -1,0 +1,76 @@
+(in-package #:image-protocol/tests)
+
+;;; RAW: "RAW1" w(u16) h(u16) channels(u8) pixels… ; "RAWA" n(u8) then n RAW1 frames.
+
+(img:register-signature :raw 0 (map 'list #'char-code "RAW"))
+
+(defun raw-encode (w h channels pixels)
+  (let ((out (make-array (+ 9 (length pixels)) :element-type '(unsigned-byte 8))))
+    (replace out (map 'vector #'char-code "RAW1"))
+    (setf (aref out 4) (ash w -8) (aref out 5) (logand w 255)
+          (aref out 6) (ash h -8) (aref out 7) (logand h 255) (aref out 8) channels)
+    (replace out pixels :start1 9)
+    out))
+
+(defclass raw-backend (img:image-backend)
+  ((priority :initarg :priority :initform 50 :reader priority)
+   (calls :initform 0 :accessor calls)))
+
+(defmethod img:backend-formats ((b raw-backend))
+  `((:raw :decode ,(priority b)) (:raw :encode ,(priority b))))
+
+(defun raw-header (octets)
+  (when (< (length octets) 9) (error 'img:image-truncated :format :raw))
+  (values (logior (ash (aref octets 4) 8) (aref octets 5))
+          (logior (ash (aref octets 6) 8) (aref octets 7))
+          (aref octets 8)))
+
+(defun channels-format (c) (ecase c (1 :gray) (2 :gray-alpha) (3 :rgb) (4 :rgba)))
+
+(defmethod img:backend-probe ((b raw-backend) format octets)
+  (multiple-value-bind (w h c) (raw-header octets)
+    (img:make-image-info :format format :width w :height h :pixel-format (channels-format c))))
+
+(defmethod img:backend-decode ((b raw-backend) format octets &key limits frames)
+  (incf (calls b))
+  (if (and (= (aref octets 3) (char-code #\A)))
+      (let* ((n (aref octets 4)) (pos 5) (out '()))
+        (img:check-frames n :limits limits :format format)
+        (dotimes (k n)
+          (multiple-value-bind (w h c) (raw-header (subseq octets pos))
+            (img:check-dimensions w h c :limits limits :format format :frames n)
+            (let ((px (subseq octets (+ pos 9) (+ pos 9 (* w h c)))))
+              (push (img:make-image-frame :width w :height h :format (channels-format c)
+                                          :pixels (coerce px '(simple-array (unsigned-byte 8) (*)))
+                                          :delay-ms (* 10 (1+ k)))
+                    out)
+              (incf pos (+ 9 (* w h c))))))
+        (let ((seq (img:make-image-sequence :frames (nreverse out) :loop-count 0)))
+          (if frames seq (first (img:image-sequence-frames seq)))))
+      (multiple-value-bind (w h c) (raw-header octets)
+        (img:check-dimensions w h c :limits limits :format format)
+        (when (< (length octets) (+ 9 (* w h c)))
+          (error 'img:image-truncated :format format :backend b))
+        (let ((image (img:make-image :width w :height h :format (channels-format c)
+                                     :pixels (subseq octets 9 (+ 9 (* w h c))))))
+          (if frames (img:make-image-sequence :frames (list image)) image)))))
+
+(defmethod img:backend-encode ((b raw-backend) image format &key quality &allow-other-keys)
+  (declare (ignore format))
+  (when quality (img:ignore-option b :raw :quality))
+  (raw-encode (img:image-width image) (img:image-height image)
+              (img:channels (img:image-format image)) (img:image-pixels image)))
+
+(defclass broken-backend (raw-backend) ())
+(defmethod img:backend-decode ((b broken-backend) format octets &key limits frames)
+  (declare (ignore octets limits frames))
+  (incf (calls b))
+  (error 'img:image-corrupt :format format :backend b :cause "broken on purpose"))
+
+(defmacro with-backends ((&rest backends) &body body)
+  `(let ((image-protocol::*backends* '()))
+     (dolist (b (list ,@backends)) (img:register-image-backend b))
+     (let ((img:*enabled-formats* (cons :raw img:+default-enabled-formats+)))
+       ,@body)))
+
+(defun octets (list) (coerce list '(simple-array (unsigned-byte 8) (*))))
