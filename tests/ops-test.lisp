@@ -91,9 +91,9 @@
       (ok (equal (%px dst) '(0 0 255 255  0 0 255 255)) "dst unchanged"))))
 
 ;;; Pillow parity (image-protocol#2 fix). Expected values come from Pillow
-;;; 11.3 (tests/pillow-reference.py). Pillow resamples in 8-bit fixed point
-;;; and premultiplies RGBA in 8 bits, so resampled samples may differ by 1
-;;; (by 2 for RGBA). Sizes and composites are exact.
+;;; 11.3 (tests/pillow-reference.py). resize-image follows Pillow's 8-bit
+;;; fixed-point passes and 8-bit premultiplication, so samples are exact, as
+;;; are sizes and composites (parity-test.lisp checks many more cases).
 
 (defun %pattern (w h)
   "Pillow's Image.new('L', (w, h)) filled with (37x + 91y) mod 256."
@@ -118,24 +118,22 @@
                 '(0 0 21 50 61 20 29 58 87 98 68 78 107 136 147 103 115 144 173 184)))
   (let ((d (%px (img:resize-image (%pattern 7 5) 3 2 :filter filter)))
         (u (%px (img:resize-image (%pattern 3 2) 5 4 :filter filter))))
-    (ok (%close-p d down 1) (format nil "~(~a~) 7x5 -> 3x2: ~s, Pillow ~s" filter d down))
-    (ok (%close-p u up 1) (format nil "~(~a~) 3x2 -> 5x4: ~s, Pillow ~s" filter u up))))
+    (ok (equal d down) (format nil "~(~a~) 7x5 -> 3x2: ~s, Pillow ~s" filter d down))
+    (ok (equal u up) (format nil "~(~a~) 3x2 -> 5x4: ~s, Pillow ~s" filter u up))))
 
 (deftest ops-resize-reducing-gap-and-rgba-parity
   (let ((gap (%px (img:resize-image (%pattern 40 30) 7 5 :reducing-gap 2)))
         (plain (%px (img:resize-image (%pattern 40 30) 7 5))))
-    (ok (%close-p gap '(114 121 125 122 132 127 132 135 116 121 126 122 132 127 132 137 115 120
-                        126 123 132 128 131 138 117 120 125 123 131 127 131 138 116 120 128)
-                  1)
+    (ok (equal gap '(114 121 125 122 132 127 132 135 116 121 126 122 132 127 132 137 115 120
+                     126 123 132 128 131 138 117 120 125 123 131 127 131 138 116 120 128))
         (format nil "reducing_gap=2: ~s" gap))
-    (ok (%close-p plain '(115 121 123 126 128 131 133 134 119 121 124 126 129 130 133 134 119 120
-                          124 126 130 128 133 134 120 120 123 124 128 128 132 134 120 120 126)
-                  1)
+    (ok (equal plain '(115 121 123 126 128 131 133 134 119 121 124 126 129 130 133 134 119 120
+                       124 126 130 128 133 134 120 120 123 124 128 128 132 134 120 120 126))
         (format nil "no gap: ~s" plain)))
   (let* ((src (img:make-image :width 4 :height 1 :format :rgba
                               :pixels (octets '(255 0 0 255  0 255 0 64  0 0 255 0  255 255 255 200))))
          (got (%px (img:resize-image src 2 1 :filter :bilinear))))
-    (ok (%close-p got '(202 50 0 137  230 255 230 95) 2)
+    (ok (equal got '(202 50 0 137  230 255 230 95))
         (format nil "RGBA premultiplied: ~s" got))))
 
 (deftest ops-thumbnail-pillow-sizes
