@@ -233,3 +233,66 @@
                (loop for (a b c d) on (%px r) by (lambda (l) (nthcdr 4 l))
                      collect (list a b c d)))
         "linear light keeps a flat colour flat")))
+
+(defun %pattern-with-alpha (w h format)
+  "%PATTERN as an opaque :RGBA or :GRAY-ALPHA image (alpha 255)."
+  (img:make-image :width w :height h :format format
+                  :pixels (octets (loop for v in (%px (%pattern w h))
+                                        append (if (eq format :rgba)
+                                                   (list v v v 255)
+                                                   (list v 255))))))
+
+(defun %first-channel (image)
+  (let ((c (ecase (img:image-format image) (:gray 1) (:gray-alpha 2) (:rgb 3) (:rgba 4))))
+    (loop for v in (%px image) for i from 0 when (zerop (mod i c)) collect v)))
+
+(deftest ops-alpha-images-ignore-reducing-gap-like-pillow
+  "Pillow 11.3's resize() of an RGBA / LA image resizes the premultiplied
+   copy without reducing_gap (Image.resize: im.resize(size, resample, box)),
+   so rgba.resize((7, 5), LANCZOS, reducing_gap=2.0) equals the no-gap L
+   result, and thumbnail() of a PNG with alpha is a plain resize. The PR
+   box-reduces alpha images first: up to 4 off here, 26 on noise."
+  (let ((pillow '(115 121 123 126 128 131 133 134 119 121 124 126 129 130 133 134 119 120
+                  124 126 130 128 133 134 120 120 123 124 128 128 132 134 120 120 126)))
+    (dolist (format '(:rgba :gray-alpha))
+      (let ((got (%first-channel (img:resize-image (%pattern-with-alpha 40 30 format) 7 5
+                                                   :filter :lanczos3 :reducing-gap 2))))
+        (ok (%close-p got pillow 2)
+            (format nil "~(~a~) 40x30 -> 7x5 lanczos, reducing gap 2: ~s, Pillow ~s"
+                    format got pillow)))))
+  (let ((got (%first-channel (img:thumbnail (%pattern-with-alpha 40 30 :rgba) 7 7
+                                            :filter :bicubic)))
+        (pillow '(116 120 123 126 128 131 132 133 120 121 124 126 129 130 133 133 120 120
+                  123 126 129 129 132 134 121 120 123 124 128 129 132 133 120 121 125)))
+    (ok (%close-p got pillow 2)
+        (format nil "rgba thumbnail((7, 7), BICUBIC): ~s, Pillow ~s" got pillow))))
+
+(deftest ops-nearest-ties-like-pillow
+  "Pillow's NEAREST steps the source coordinate in doubles (xo += scale),
+   so a centre that lands exactly on a pixel edge rounds down: 4 -> 6 gives
+   0 50 50 100 100 150 (exact centres: column 4 => 3), 2 -> 7 gives
+   0 0 0 0 200 200 200. 100 -> 150 differs in 23 of 150 columns. The PR
+   copies a whole different pixel there, not a sample within 1."
+  (flet ((row (values w h ow oh)
+           (%px (img:resize-image (img:make-image :width w :height h :format :gray
+                                                  :pixels (octets values))
+                                  ow oh :filter :nearest))))
+    (ok (equal '(0 50 50 100 100 150) (row '(0 50 100 150) 4 1 6 1))
+        (format nil "4 -> 6: ~s" (row '(0 50 100 150) 4 1 6 1)))
+    (ok (equal '(0 50 50 100 100 150) (row '(0 50 100 150) 1 4 1 6))
+        (format nil "1x4 -> 1x6: ~s" (row '(0 50 100 150) 1 4 1 6)))
+    (ok (equal '(0 0 0 0 200 200 200) (row '(0 200) 2 1 7 1))
+        (format nil "2 -> 7: ~s" (row '(0 200) 2 1 7 1)))))
+
+(deftest ops-composite-equals-pillow
+  "README: composite-image uses exact integer arithmetic, so results equal
+   Pillow's. Pillow's alpha_composite rounds through 7-bit fixed point
+   (AlphaComposite.c, PRECISION_BITS 7) and differs from exact rounding
+   by 1 in 167 of 31520 sampled pixel pairs; three of them here."
+  (let ((dst (img:make-image :width 3 :height 1 :format :rgba
+                             :pixels (octets '(0 255 0 2  255 0 85 2  250 5 83 2))))
+        (src (img:make-image :width 3 :height 1 :format :rgba
+                             :pixels (octets '(255 127 0 21  0 0 255 21  13 6 242 34)))))
+    (let ((got (%px (img:composite-image dst src))))
+      (ok (equal '(234 137 0 23  21 0 241 23  25 6 234 36) got)
+          (format nil "Image.alpha_composite: ~s" got)))))
