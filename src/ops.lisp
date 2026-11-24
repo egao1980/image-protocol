@@ -491,11 +491,12 @@ not 1.7000000476837158d0."
     (double-float number)
     (rational (coerce number 'double-float))
     (float
+     ;; The first float type NUMBER belongs to. A runtime search, because an
+     ;; ETYPECASE over these types has shadowed clauses wherever two of them
+     ;; are the same type (SBCL: short = single, long = double).
      (let ((text (let ((*read-default-float-format*
-                        (etypecase number
-                          (short-float 'short-float)
-                          (single-float 'single-float)
-                          (long-float 'long-float))))
+                        (find-if (lambda (type) (typep number type))
+                                 '(short-float single-float double-float long-float))))
                    (prin1-to-string number))))
        (let ((*read-default-float-format* 'double-float)
              (*read-eval* nil))
