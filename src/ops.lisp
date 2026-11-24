@@ -491,11 +491,12 @@ not 1.7000000476837158d0."
     (double-float number)
     (rational (coerce number 'double-float))
     (float
+     ;; The first float type NUMBER belongs to. A runtime search, because an
+     ;; ETYPECASE over these types has shadowed clauses wherever two of them
+     ;; are the same type (SBCL: short = single, long = double).
      (let ((text (let ((*read-default-float-format*
-                        (etypecase number
-                          (short-float 'short-float)
-                          (single-float 'single-float)
-                          (long-float 'long-float))))
+                        (find-if (lambda (type) (typep number type))
+                                 '(short-float single-float double-float long-float))))
                    (prin1-to-string number))))
        (let ((*read-default-float-format* 'double-float)
              (*read-eval* nil))
@@ -581,7 +582,169 @@ samples, rounded to 8 bits only at the end."
               ch height)))
     (%with-pixels image width height (%floats-octets buf format t))))
 
-(defun resize-image (image width height &key (filter :lanczos3) reducing-gap linear)
+;;; Backend fast path (0.3.0; image-protocol#3, image-backend-stb#4)
+;;;
+;;; A backend with a native resampler can do RESIZE-IMAGE's work by
+;;; specialising BACKEND-RESIZE (registry.lisp). The pure-Lisp resampler above
+;;; stays the default and the reference: Pillow parity is a property of that
+;;; path only, and a backend promises only to come close to it (each backend's
+;;; tests say how close). So a backend resizes only when the caller names it,
+;;; through :BACKEND or *RESIZE-BACKENDS*. Registering a backend (for decoding,
+;;; say) never changes the samples RESIZE-IMAGE returns.
+;;;
+;;; R1  Designator. RESIZE-IMAGE, THUMBNAIL and FIT-IMAGE take :BACKEND,
+;;;     defaulting to the value of *RESIZE-BACKENDS* (NIL unless the caller
+;;;     binds it). Its value is NIL (no backend: the pure-Lisp resampler), an
+;;;     IMAGE-BACKEND, or a proper list of IMAGE-BACKENDs, consulted in list
+;;;     order (a backend listed twice is consulted twice). Anything else, such as
+;;;     a class name, :PROTOCOL, a list holding a non-backend or a dotted list,
+;;;     signals IMAGE-INVALID-ARGUMENT with OPERATION the operation called
+;;;     (:RESIZE, :THUMBNAIL or :FIT), ARGUMENT BACKEND and VALUE the designator
+;;;     itself (EQ).
+;;;
+;;; R2  Order of checks. Each operation checks the designator after its 0.2.0
+;;;     argument checks and before anything else:
+;;;       RESIZE-IMAGE  IMAGE, WIDTH, HEIGHT, FILTER, REDUCING-GAP; then BACKEND;
+;;;                     then the empty image and CHECK-DIMENSIONS (the output
+;;;                     size against *IMAGE-LIMITS*).
+;;;       THUMBNAIL     IMAGE, MAX-WIDTH, MAX-HEIGHT; then BACKEND; then the
+;;;                     early returns (an empty image, an image that fits).
+;;;       FIT-IMAGE     IMAGE, the bounds; then BACKEND; then the early returns.
+;;;     Every error 0.2.0 signals is still signalled, with the same condition,
+;;;     before any backend is consulted, and a bad designator is reported even
+;;;     when nothing would be resized. THUMBNAIL and FIT-IMAGE pass the
+;;;     designator to RESIZE-IMAGE as its :BACKEND, unchanged.
+;;;
+;;; R3  Nothing to do. When WIDTH × HEIGHT is IMAGE's size, RESIZE-IMAGE
+;;;     returns IMAGE itself, as in 0.2.0, and consults no backend. Likewise
+;;;     THUMBNAIL and FIT-IMAGE when they return IMAGE itself.
+;;;
+;;; R4  Call. Otherwise RESIZE-IMAGE calls each backend of the designator in
+;;;     order as
+;;;       (BACKEND-RESIZE backend image width height
+;;;                       :filter filter :reducing-gap gap :linear linear)
+;;;     with all three keys always passed:
+;;;       IMAGE    the caller's IMAGE itself (EQ, not a copy). By then it is an
+;;;                8-bit image of at least 1 × 1 whose pixels match its size. A
+;;;                backend must not modify it.
+;;;       WIDTH, HEIGHT  RESIZE-IMAGE's, within *IMAGE-LIMITS*.
+;;;       FILTER   the filter, a member of +RESIZE-FILTERS+ (:LANCZOS3 when the
+;;;                caller gave none).
+;;;       GAP      the reducing gap the pure-Lisp resampler applies: NIL for an
+;;;                image with alpha (:GRAY-ALPHA, :RGBA) and for :NEAREST,
+;;;                otherwise REDUCING-GAP as the caller gave it (NIL or a real
+;;;                >= 1, EQL, not converted).
+;;;       LINEAR   T or NIL: the caller's generalized boolean.
+;;;
+;;; R5  Answer. A backend declines by returning NIL; the method on
+;;;     IMAGE-BACKEND always does. Then the next backend is consulted, and after
+;;;     the last the pure-Lisp resampler runs: the result is 0.2.0's, sample
+;;;     for sample, the same as with :BACKEND NIL. Any other answer ends the
+;;;     search. It must be an IMAGE R with width WIDTH, height HEIGHT, IMAGE's
+;;;     format, depth 8, WIDTH × HEIGHT × (CHANNELS format) octets of pixels,
+;;;     and a pixel vector that is not IMAGE's own (EQ). Anything else (a
+;;;     vector, an R of the wrong size or format, …) signals IMAGE-CORRUPT with
+;;;     BACKEND the backend and a CAUSE string that names the broken rule.
+;;;
+;;; R6  Result. From an accepted R, RESIZE-IMAGE returns a fresh image built
+;;;     as 0.2.0 builds every result: a COPY-IMAGE of IMAGE, so an IMAGE-FRAME
+;;;     stays a frame and ORIENTATION, ICC-PROFILE, GAMMA, COLOR-SPACE and the
+;;;     frame slots are IMAGE's, not R's, with WIDTH, HEIGHT and R's pixel
+;;;     vector. R itself is not returned, and IMAGE is never modified.
+;;;
+;;; R7  Errors and restarts. A condition signalled inside BACKEND-RESIZE
+;;;     reaches the caller unchanged: the protocol handles nothing. Around each
+;;;     backend's call and the check of its answer (R5), RESIZE-IMAGE
+;;;     establishes the restart TRY-NEXT-BACKEND (no arguments). It treats
+;;;     that backend as having declined, so the next backend, or the pure-Lisp
+;;;     resampler, runs.
+;;;
+;;; R8  No global state. The operations read *RESIZE-BACKENDS* (as the
+;;;     default of :BACKEND) and *IMAGE-LIMITS*. They change no special
+;;;     variable and not the backend registry, and a backend named in :BACKEND
+;;;     is not registered.
+
+(defvar *resize-backends* nil
+  "The default :BACKEND of RESIZE-IMAGE, THUMBNAIL and FIT-IMAGE: NIL, an
+IMAGE-BACKEND or a list of them, whose BACKEND-RESIZE methods are tried
+before the pure-Lisp resampler (rules R1–R8 above). Bind it to opt in to a
+native fast path; registering a backend does not.")
+
+(defun %resize-backend-list (designator operation)
+  "R1: the backends DESIGNATOR names, as a list, in order; NIL for NIL.
+Otherwise IMAGE-INVALID-ARGUMENT for OPERATION, argument BACKEND, value
+DESIGNATOR itself."
+  (flet ((refuse ()
+           (%bad-argument operation 'backend designator
+                          "NIL, an IMAGE-BACKEND or a proper list of IMAGE-BACKENDs")))
+    (typecase designator
+      (null '())
+      (image-backend (list designator))
+      (cons
+       ;; Walk the conses by hand: EVERY, LAST and LIST-LENGTH signal a
+       ;; TYPE-ERROR on a dotted list, which is not R1's condition.
+       (loop for tail = designator then (cdr tail)
+             while (consp tail)
+             unless (typep (car tail) 'image-backend)
+               do (refuse)
+             finally (when tail (refuse)))
+       designator)
+      (t (refuse)))))
+
+(defun %resize-answer-pixels (backend image width height answer)
+  "R5: the pixel vector of ANSWER, BACKEND's non-NIL BACKEND-RESIZE value for
+IMAGE at WIDTH × HEIGHT, when RESIZE-IMAGE can take it. Otherwise
+IMAGE-CORRUPT with BACKEND and a CAUSE string naming the broken rule.
+IMAGE-P comes first, so no slot reader runs on a non-image."
+  (flet ((need (test control &rest arguments)
+           (unless test
+             (error 'image-corrupt
+                    :backend backend
+                    :cause (format nil "BACKEND-RESIZE answer: ~?" control arguments)))))
+    (need (image-p answer) "~S, not NIL or an IMAGE" (type-of answer))
+    (let* ((format (image-format image))
+           (pixels (image-pixels answer))
+           (size (* width height (channels format))))
+      (need (eql width (image-width answer)) "width ~D, expected ~D"
+            (image-width answer) width)
+      (need (eql height (image-height answer)) "height ~D, expected ~D"
+            (image-height answer) height)
+      (need (eq format (image-format answer)) "format ~S, expected ~S"
+            (image-format answer) format)
+      (need (eql 8 (image-depth answer)) "depth ~S, expected 8" (image-depth answer))
+      (need (= size (length pixels)) "~D pixel octets, expected ~D" (length pixels) size)
+      (need (not (eq pixels (image-pixels image))) "IMAGE's own pixel vector, not a fresh one")
+      pixels)))
+
+(defun %resize-with-backends (backends image width height filter reducing-gap linear)
+  "R4–R7: consult BACKENDS in order for IMAGE resized to WIDTH × HEIGHT, with
+FILTER, the gap R4 derives from REDUCING-GAP, and LINEAR as T or NIL. → the
+result R6 builds from the first accepted answer, or NIL when every backend
+declines or is skipped by TRY-NEXT-BACKEND (or BACKENDS is empty)."
+  (let ((gap (and (null (%alpha-index (image-format image)))
+                  (not (eq filter :nearest))
+                  reducing-gap))
+        (linear (and linear t)))
+    (dolist (backend backends nil)
+      (let ((pixels
+              ;; The restartable form is not a literal ERROR call, so the
+              ;; restart is not tied to one condition: it covers the
+              ;; backend's own conditions and the R5 check alike.
+              (restart-case
+                  (let ((answer (backend-resize backend image width height
+                                                :filter filter :reducing-gap gap :linear linear)))
+                    (and answer (%resize-answer-pixels backend image width height answer)))
+                (try-next-backend ()
+                  :report (lambda (stream)
+                            (format stream "Treat ~A as declining: consult the next resize ~
+                                            backend, or the pure-Lisp resampler."
+                                    backend))
+                  nil))))
+        (when pixels
+          (return (%with-pixels image width height pixels)))))))
+
+(defun resize-image (image width height &key (filter :lanczos3) reducing-gap linear
+                                            (backend *resize-backends*))
   "→ IMAGE resampled to WIDTH × HEIGHT, like Pillow 11.3's resize(), and
 sample for sample equal to it. FILTER is one of +RESIZE-FILTERS+: :NEAREST,
 :BOX, :BILINEAR, :BICUBIC or :LANCZOS3 (the default). Colour is resampled
@@ -593,7 +756,10 @@ single float) is Python's 1.7. As in Pillow, it applies only to images without a
 resizes the premultiplied copy of an RGBA or LA image without it) and not
 to :NEAREST. LINEAR T resamples in linear light instead of sRGB, in floats
 (Pillow has no equivalent). The output size is checked against
-*IMAGE-LIMITS*."
+*IMAGE-LIMITS*. BACKEND (default *RESIZE-BACKENDS*, itself NIL by default)
+names image backends whose BACKEND-RESIZE is tried first, as a native fast
+path; when all decline, or with NIL, the pure-Lisp resampler runs (rules
+R1–R8 above)."
   (%ops-image image :resize)
   (let ((w (image-width image)) (h (image-height image))
         (format (image-format image)))
@@ -604,18 +770,20 @@ to :NEAREST. LINEAR T resamples in linear light instead of sRGB, in floats
       (%bad-argument :resize 'filter filter (format nil "one of ~{~S~^ ~}" +resize-filters+)))
     (unless (or (null reducing-gap) (and (realp reducing-gap) (>= reducing-gap 1)))
       (%bad-argument :resize 'reducing-gap reducing-gap "NIL or a real >= 1"))
-    (when (or (zerop w) (zerop h))
-      (%bad-argument :resize 'image image "an empty image cannot be resampled"))
-    (check-dimensions width height (channels format))
-    (cond
-     ((and (= width w) (= height h)) image)
-     ((eq filter :nearest) (%resize-nearest image width height))
-     (t
-      (multiple-value-bind (support kernel) (%resample-filter filter)
-        (let ((gap (and (null (%alpha-index format)) reducing-gap)))
-          (if linear
-              (%resize-linear image width height support kernel gap)
-              (%resize-8bit image width height support kernel gap))))))))
+    (let ((backends (%resize-backend-list backend :resize)))
+      (when (or (zerop w) (zerop h))
+        (%bad-argument :resize 'image image "an empty image cannot be resampled"))
+      (check-dimensions width height (channels format))
+      (cond
+       ((and (= width w) (= height h)) image)
+       ((%resize-with-backends backends image width height filter reducing-gap linear))
+       ((eq filter :nearest) (%resize-nearest image width height))
+       (t
+        (multiple-value-bind (support kernel) (%resample-filter filter)
+          (let ((gap (and (null (%alpha-index format)) reducing-gap)))
+            (if linear
+                (%resize-linear image width height support kernel gap)
+                (%resize-8bit image width height support kernel gap)))))))))
 
 (defun %thumbnail-size (w h max-width max-height)
   "Pillow's thumbnail() size: the largest size with W:H's aspect within
@@ -639,36 +807,43 @@ same way."
                 (round-aspect (/ max-width aspect)
                               (lambda (n) (if (zerop n) 0 (abs (- aspect (ratio max-width n)))))))))))
 
-(defun thumbnail (image max-width max-height &key (filter :lanczos3) (reducing-gap 2))
+(defun thumbnail (image max-width max-height &key (filter :lanczos3) (reducing-gap 2)
+                                               (backend *resize-backends*))
   "→ IMAGE scaled down to fit MAX-WIDTH × MAX-HEIGHT, keeping its aspect
 ratio, never enlarged (Pillow's thumbnail(), but functional: IMAGE itself
-comes back when it already fits). FILTER and REDUCING-GAP (default 2, as
-Pillow) go to RESIZE-IMAGE, so an image with alpha is resized without the
-gap, as in Pillow. The filter defaults to :LANCZOS3 (Pillow: bicubic)."
+comes back when it already fits). FILTER, REDUCING-GAP (default 2, as
+Pillow) and BACKEND go to RESIZE-IMAGE, so an image with alpha is resized
+without the gap, as in Pillow. The filter defaults to :LANCZOS3 (Pillow:
+bicubic). BACKEND is checked even when IMAGE fits (R2)."
   (%ops-image image :thumbnail)
   (loop for (name value) in `((max-width ,max-width) (max-height ,max-height))
         unless (typep value '(integer 1))
           do (%bad-argument :thumbnail name value "a positive integer"))
+  (%resize-backend-list backend :thumbnail)
   (when (or (zerop (image-width image)) (zerop (image-height image)))
     (return-from thumbnail image))
   (let ((size (%thumbnail-size (image-width image) (image-height image) max-width max-height)))
     (if size
-        (resize-image image (first size) (second size) :filter filter :reducing-gap reducing-gap)
+        (resize-image image (first size) (second size) :filter filter :reducing-gap reducing-gap
+                                                       :backend backend)
         image)))
 
-(defun fit-image (image &key max-width max-height enlarge (filter :lanczos3) (reducing-gap 2))
+(defun fit-image (image &key max-width max-height enlarge (filter :lanczos3) (reducing-gap 2)
+                          (backend *resize-backends*))
   "→ IMAGE scaled to fit MAX-WIDTH and / or MAX-HEIGHT (at least one),
 keeping its aspect ratio: the scale is the smallest the given sides allow,
 each new side rounded half up and at least 1. Smaller images are enlarged
-only when ENLARGE; IMAGE itself comes back when the scale is 1. FILTER and
-REDUCING-GAP go to RESIZE-IMAGE (image-protocol#3: sizing photos for
-vision-model input, e.g. :MAX-WIDTH 1536 :MAX-HEIGHT 1536)."
+only when ENLARGE; IMAGE itself comes back when the scale is 1. FILTER,
+REDUCING-GAP and BACKEND go to RESIZE-IMAGE (image-protocol#3: sizing photos
+for vision-model input, e.g. :MAX-WIDTH 1536 :MAX-HEIGHT 1536). BACKEND is
+checked even when the scale is 1 (R2)."
   (%ops-image image :fit)
   (unless (or max-width max-height)
     (%bad-argument :fit 'max-width max-width "give :max-width, :max-height or both"))
   (loop for (name value) in `((max-width ,max-width) (max-height ,max-height))
         unless (or (null value) (typep value '(integer 1)))
           do (%bad-argument :fit name value "NIL or a positive integer"))
+  (%resize-backend-list backend :fit)
   (let ((w (image-width image)) (h (image-height image)))
     (when (or (zerop w) (zerop h))
       (return-from fit-image image))
@@ -680,7 +855,7 @@ vision-model input, e.g. :MAX-WIDTH 1536 :MAX-HEIGHT 1536)."
           (resize-image image
                         (max 1 (floor (+ (* w scale) 1/2)))
                         (max 1 (floor (+ (* h scale) 1/2)))
-                        :filter filter :reducing-gap reducing-gap)))))
+                        :filter filter :reducing-gap reducing-gap :backend backend)))))
 
 ;;; Composite
 

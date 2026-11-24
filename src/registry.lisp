@@ -7,7 +7,8 @@
 
 (defclass image-backend () ()
   (:documentation "An image codec implementation. Subclass and implement
-BACKEND-FORMATS, BACKEND-PROBE, BACKEND-DECODE and/or BACKEND-ENCODE."))
+BACKEND-FORMATS, BACKEND-PROBE, BACKEND-DECODE and/or BACKEND-ENCODE, and
+optionally BACKEND-RESIZE (a native fast path for RESIZE-IMAGE)."))
 
 (defgeneric backend-formats (backend)
   (:documentation "→ list of (format operation priority), OPERATION :DECODE or :ENCODE."))
@@ -25,6 +26,19 @@ signal only IMAGE-ERROR conditions for bad input."))
   (:documentation "Encode IMAGE → octets. Options arrive with protocol defaults
 applied; signal IMAGE-UNSUPPORTED-OPTION (via WARN or ERROR, see
 *STRICT-OPTIONS*) for ones the backend can't honour."))
+
+(defgeneric backend-resize (backend image width height &key filter reducing-gap linear)
+  (:documentation "A native fast path for RESIZE-IMAGE (rules R1–R8 in ops.lisp,
+\"Backend fast path\"). Called only for backends the caller names through
+RESIZE-IMAGE's :BACKEND or *RESIZE-BACKENDS*, never by registration. IMAGE
+is the caller's own 8-bit image (do not modify it), WIDTH × HEIGHT the
+checked output size, and FILTER, REDUCING-GAP and LINEAR are always passed
+(R4). → NIL to decline, so the next backend or the pure-Lisp resampler runs;
+or a fresh WIDTH × HEIGHT IMAGE in IMAGE's format and depth 8 whose pixels
+RESIZE-IMAGE takes (R5, R6). The method on IMAGE-BACKEND declines.")
+  (:method ((backend image-backend) image width height &key filter reducing-gap linear)
+    (declare (ignore image width height filter reducing-gap linear))
+    nil))
 
 (defvar *backends* '() "Registered backends, newest first.")
 (defvar *registry-lock* (bt2:make-lock :name "image-backends"))
