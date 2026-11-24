@@ -663,10 +663,6 @@ samples, rounded to 8 bits only at the end."
 ;;;     default of :BACKEND) and *IMAGE-LIMITS*. They change no special
 ;;;     variable and not the backend registry, and a backend named in :BACKEND
 ;;;     is not registered.
-;;;
-;;; The 0.3.0 contract: %RESIZE-HOOK-PENDING marks what is left to write.
-;;; While it is there, :BACKEND NIL (the default) behaves as in 0.2.0, and
-;;; any other designator signals.
 
 (defvar *resize-backends* nil
   "The default :BACKEND of RESIZE-IMAGE, THUMBNAIL and FIT-IMAGE: NIL, an
@@ -674,27 +670,78 @@ IMAGE-BACKEND or a list of them, whose BACKEND-RESIZE methods are tried
 before the pure-Lisp resampler (rules R1–R8 above). Bind it to opt in to a
 native fast path; registering a backend does not.")
 
-(defun %resize-hook-pending (what)
-  "Contract stub for the 0.3.0 backend hook. Every call is replaced by the
-implementation, then this function is deleted."
-  (error "image-protocol 0.3.0 backend-resize hook pending: ~A" what))
-
 (defun %resize-backend-list (designator operation)
   "R1: the backends DESIGNATOR names, as a list, in order; NIL for NIL.
-Otherwise IMAGE-INVALID-ARGUMENT for OPERATION, argument BACKEND."
-  (declare (ignorable operation))
-  (if (null designator)
-      '()
-      (%resize-hook-pending '%resize-backend-list)))
+Otherwise IMAGE-INVALID-ARGUMENT for OPERATION, argument BACKEND, value
+DESIGNATOR itself."
+  (flet ((refuse ()
+           (%bad-argument operation 'backend designator
+                          "NIL, an IMAGE-BACKEND or a proper list of IMAGE-BACKENDs")))
+    (typecase designator
+      (null '())
+      (image-backend (list designator))
+      (cons
+       ;; Walk the conses by hand: EVERY, LAST and LIST-LENGTH signal a
+       ;; TYPE-ERROR on a dotted list, which is not R1's condition.
+       (loop for tail = designator then (cdr tail)
+             while (consp tail)
+             unless (typep (car tail) 'image-backend)
+               do (refuse)
+             finally (when tail (refuse)))
+       designator)
+      (t (refuse)))))
+
+(defun %resize-answer-pixels (backend image width height answer)
+  "R5: the pixel vector of ANSWER, BACKEND's non-NIL BACKEND-RESIZE value for
+IMAGE at WIDTH × HEIGHT, when RESIZE-IMAGE can take it. Otherwise
+IMAGE-CORRUPT with BACKEND and a CAUSE string naming the broken rule.
+IMAGE-P comes first, so no slot reader runs on a non-image."
+  (flet ((need (test control &rest arguments)
+           (unless test
+             (error 'image-corrupt
+                    :backend backend
+                    :cause (format nil "BACKEND-RESIZE answer: ~?" control arguments)))))
+    (need (image-p answer) "~S, not NIL or an IMAGE" (type-of answer))
+    (let* ((format (image-format image))
+           (pixels (image-pixels answer))
+           (size (* width height (channels format))))
+      (need (eql width (image-width answer)) "width ~D, expected ~D"
+            (image-width answer) width)
+      (need (eql height (image-height answer)) "height ~D, expected ~D"
+            (image-height answer) height)
+      (need (eq format (image-format answer)) "format ~S, expected ~S"
+            (image-format answer) format)
+      (need (eql 8 (image-depth answer)) "depth ~S, expected 8" (image-depth answer))
+      (need (= size (length pixels)) "~D pixel octets, expected ~D" (length pixels) size)
+      (need (not (eq pixels (image-pixels image))) "IMAGE's own pixel vector, not a fresh one")
+      pixels)))
 
 (defun %resize-with-backends (backends image width height filter reducing-gap linear)
   "R4–R7: consult BACKENDS in order for IMAGE resized to WIDTH × HEIGHT, with
 FILTER, the gap R4 derives from REDUCING-GAP, and LINEAR as T or NIL. → the
 result R6 builds from the first accepted answer, or NIL when every backend
-declines (or BACKENDS is empty)."
-  (declare (ignorable image width height filter reducing-gap linear))
-  (when backends
-    (%resize-hook-pending '%resize-with-backends)))
+declines or is skipped by TRY-NEXT-BACKEND (or BACKENDS is empty)."
+  (let ((gap (and (null (%alpha-index (image-format image)))
+                  (not (eq filter :nearest))
+                  reducing-gap))
+        (linear (and linear t)))
+    (dolist (backend backends nil)
+      (let ((pixels
+              ;; The restartable form is not a literal ERROR call, so the
+              ;; restart is not tied to one condition: it covers the
+              ;; backend's own conditions and the R5 check alike.
+              (restart-case
+                  (let ((answer (backend-resize backend image width height
+                                                :filter filter :reducing-gap gap :linear linear)))
+                    (and answer (%resize-answer-pixels backend image width height answer)))
+                (try-next-backend ()
+                  :report (lambda (stream)
+                            (format stream "Treat ~A as declining: consult the next resize ~
+                                            backend, or the pure-Lisp resampler."
+                                    backend))
+                  nil))))
+        (when pixels
+          (return (%with-pixels image width height pixels)))))))
 
 (defun resize-image (image width height &key (filter :lanczos3) reducing-gap linear
                                             (backend *resize-backends*))

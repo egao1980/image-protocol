@@ -49,7 +49,7 @@ Parity is tested against Pillow 11.3 byte for byte: `tests/pillow-parity.py` wri
 
 A bad argument signals `image-invalid-argument`, with `image-invalid-argument-operation`, `-argument`, `-value` and `-reason`. A depth-16 image signals `image-unsupported-feature`. Arbitrary-angle rotation, drawing and text are not covered.
 
-### Native fast path (0.3.0, contract)
+### Native fast path (0.3.0)
 
 A backend can resize natively by specialising `backend-resize`. The pure-Lisp resampler stays the default and the reference, and Pillow parity holds only for it. So a backend resizes only when the caller names it: registering it, for decoding say, changes nothing.
 
