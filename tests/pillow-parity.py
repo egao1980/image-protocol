@@ -86,6 +86,15 @@ def fixed_cases():
             for w, h, ow, oh, gap in decimal_gaps:
                 resize_case(fmt, mode, c, w, h, ow, oh, fname, f, gap, seed)
                 seed += 1
+    # Reductions of 4x and more, with and without the gap (image-protocol#9):
+    # a box reduce by 2, by 4, and by 4 with partial blocks on both edges.
+    large_reductions = [(96, 64, 24, 16), (160, 120, 20, 15), (130, 70, 16, 8)]
+    for fmt, mode, c in [m for m in MODES if m[0] in ("gray", "rgb")]:
+        for fname, f in [("bicubic", R.BICUBIC), ("lanczos3", R.LANCZOS)]:
+            for size in large_reductions:
+                for gap in [None, 2.0]:
+                    resize_case(fmt, mode, c, *size, fname, f, gap, seed)
+                    seed += 1
     rng = random.Random(2)
     for _ in range(300):
         w, h, mw, mh = (rng.randint(1, 40) for _ in range(4))
