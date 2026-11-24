@@ -37,9 +37,9 @@ Pillow's most used calls. They are eager and functional: each returns a new `ima
 
 | Operation | Pillow | Notes |
 |-----------|--------|-------|
-| `resize-image image w h &key filter reducing-gap linear` | `resize((w, h), filter, reducing_gap=…)` | Filters (`+resize-filters+`): `:nearest` `:box` `:bilinear` `:bicubic` `:lanczos3`. Samples equal Pillow 11.3's, byte for byte: the same separable convolution in 22-bit fixed point (the kernel widens with the reduction, is clipped at the edges and normalised), each pass rounded to 8 bits, colour premultiplied by alpha in 8 bits (so transparent pixels do not bleed), and `:nearest` picking the same pixel at exact ties. `:reducing-gap` box-reduces by an integer factor first (a float gap counts as the decimal it prints as, so `1.7`, a single float, is Python's `1.7`); as in Pillow, not for images with alpha (Pillow resizes their premultiplied copy without the gap). `:linear t` resamples in linear light, in floats (Pillow has no equivalent). The output size is checked against `*image-limits*` |
-| `thumbnail image max-w max-h &key filter reducing-gap` | `thumbnail((max-w, max-h))` | Pillow's size rounding (in doubles, so near ties go the same way); `reducing-gap` defaults to 2 as in Pillow, so an image with alpha is resized without it. The filter defaults to Lanczos3 here (Pillow: bicubic) |
-| `fit-image image &key max-width max-height enlarge filter` | — | Scale to one or both bounds, rounded half up (#3) |
+| `resize-image image w h &key filter reducing-gap linear backend` | `resize((w, h), filter, reducing_gap=…)` | Filters (`+resize-filters+`): `:nearest` `:box` `:bilinear` `:bicubic` `:lanczos3`. Samples equal Pillow 11.3's, byte for byte: the same separable convolution in 22-bit fixed point (the kernel widens with the reduction, is clipped at the edges and normalised), each pass rounded to 8 bits, colour premultiplied by alpha in 8 bits (so transparent pixels do not bleed), and `:nearest` picking the same pixel at exact ties. `:reducing-gap` box-reduces by an integer factor first (a float gap counts as the decimal it prints as, so `1.7`, a single float, is Python's `1.7`); as in Pillow, not for images with alpha (Pillow resizes their premultiplied copy without the gap). `:linear t` resamples in linear light, in floats (Pillow has no equivalent). The output size is checked against `*image-limits*` |
+| `thumbnail image max-w max-h &key filter reducing-gap backend` | `thumbnail((max-w, max-h))` | Pillow's size rounding (in doubles, so near ties go the same way); `reducing-gap` defaults to 2 as in Pillow, so an image with alpha is resized without it. The filter defaults to Lanczos3 here (Pillow: bicubic) |
+| `fit-image image &key max-width max-height enlarge filter backend` | — | Scale to one or both bounds, rounded half up (#3) |
 | `crop-image image x y w h` | `crop((x, y, x + w, y + h))` | The region must lie inside the image |
 | `rotate-image image degrees` | `rotate(degrees, expand=True)` / `transpose(ROTATE_*)` | Multiples of 90, counter-clockwise; negative values turn clockwise |
 | `flip-image image :horizontal / :vertical` | `transpose(FLIP_LEFT_RIGHT / FLIP_TOP_BOTTOM)` | |
@@ -48,6 +48,26 @@ Pillow's most used calls. They are eager and functional: each returns a new `ima
 Parity is tested against Pillow 11.3 byte for byte: `tests/pillow-parity.py` writes `tests/pillow-parity.sexp` (276 resizes of noise images in every format, with every filter, with and without a reducing gap, decimal gaps such as `1.7` included; 300 thumbnail sizes; composites with alpha 0, 255 and in between). `pillow-parity.py --random N` writes a stress set that `IMAGE_PROTOCOL_PARITY=file cl-repo test` runs instead.
 
 A bad argument signals `image-invalid-argument`, with `image-invalid-argument-operation`, `-argument`, `-value` and `-reason`. A depth-16 image signals `image-unsupported-feature`. Arbitrary-angle rotation, drawing and text are not covered.
+
+### Native fast path (0.3.0, contract)
+
+A backend can resize natively by specialising `backend-resize`. The pure-Lisp resampler stays the default and the reference, and Pillow parity holds only for it. So a backend resizes only when the caller names it: registering it, for decoding say, changes nothing.
+
+```lisp
+(stack-image:resize-image img 800 600 :filter :bicubic :backend stb)  ; this call
+(let ((stack-image:*resize-backends* (list stb)))                     ; a scope
+  (stack-image:thumbnail img 256 256))
+```
+
+| | |
+|---|---|
+| Designator | `:backend` of `resize-image`, `thumbnail` and `fit-image`, default `*resize-backends*` (NIL): NIL, a backend, or a list of backends tried in order. Anything else is an `image-invalid-argument` (argument `backend`) |
+| Hook | `(backend-resize backend image width height &key filter reducing-gap linear)`. All three keys are always passed. `reducing-gap` is the one the pure-Lisp path applies, so it is NIL for images with alpha and for `:nearest`. NIL declines, and the method on `image-backend` always declines |
+| Answer | A fresh `width` × `height` image in the input's format at depth 8. The result is a copy of the input (metadata, frame slots) with the answer's pixels. Any other answer signals `image-corrupt` with the backend |
+| Fallback | When every backend declines, the result is 0.2.0's, sample for sample. The restart `try-next-backend` around each call treats that backend as declining |
+| Unchanged | Every 0.2.0 check runs first. A same-size resize returns the image itself without calling a backend. No global state |
+
+The exact rules (R1–R8) are in `src/ops.lisp`, "Backend fast path", and the tests are in `tests/resize-hook-test.lisp`. [`image-backend-stb`](https://github.com/egao1980/image-backend-stb) provides a method on `stb_image_resize2`, tested for closeness to this resampler, not byte equality.
 
 Backends: [`image-backend-stb`](https://github.com/egao1980/image-backend-stb) (native, patched stb) and [`image-backend-lisp`](https://github.com/egao1980/image-backend-lisp) (pure CL).
 

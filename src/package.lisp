@@ -39,6 +39,7 @@
    #:image-backend #:backend-formats #:backend-probe #:backend-decode #:backend-encode
    #:register-image-backend #:unregister-image-backend #:image-backends
    #:*backend-preference* #:supported-formats #:*strict-options*
+   #:backend-resize #:*resize-backends*
    ;; editing operations
    #:crop-image #:rotate-image #:flip-image #:resize-image #:thumbnail #:fit-image
    #:composite-image
