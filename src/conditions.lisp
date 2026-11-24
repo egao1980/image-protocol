@@ -56,6 +56,19 @@
   (:report (lambda (c s) (format s "Native image library unavailable~@[: ~A~]"
                                  (image-error-cause c)))))
 
+(define-condition image-invalid-argument (image-error)
+  ((operation :initarg :operation :reader image-invalid-argument-operation)
+   (argument :initarg :argument :reader image-invalid-argument-argument)
+   (value :initarg :value :reader image-invalid-argument-value)
+   (reason :initarg :reason :initform nil :reader image-invalid-argument-reason))
+  (:report (lambda (c s) (format s "~(~A~): bad ~(~A~) ~S~@[: ~A~]"
+                                 (image-invalid-argument-operation c)
+                                 (image-invalid-argument-argument c)
+                                 (image-invalid-argument-value c)
+                                 (image-invalid-argument-reason c))))
+  (:documentation "An editing operation (crop, resize, rotate, flip,
+composite, thumbnail) was given an argument it cannot use."))
+
 (define-condition image-warning (warning) ())
 
 (define-condition image-format-mismatch (image-warning)

@@ -6,10 +6,12 @@
    #:image-error #:image-unknown-format #:image-unsupported-format
    #:image-unsupported-feature #:image-unsupported-option #:image-limit-exceeded
    #:image-decode-error #:image-truncated #:image-corrupt #:image-encode-error
-   #:image-native-unavailable #:image-warning #:image-format-mismatch #:image-crc-mismatch
+   #:image-native-unavailable #:image-invalid-argument #:image-warning #:image-format-mismatch #:image-crc-mismatch
    #:image-option-ignored #:ignore-option
    #:image-error-format #:image-error-backend #:image-error-cause #:image-error-operation
    #:image-error-feature #:image-error-option
+   #:image-invalid-argument-operation #:image-invalid-argument-argument
+   #:image-invalid-argument-value #:image-invalid-argument-reason
    #:image-limit-exceeded-limit #:image-limit-exceeded-allowed #:image-limit-exceeded-actual
    #:image-format-mismatch-declared #:image-format-mismatch-detected
    #:try-next-backend #:use-partial-image
@@ -37,5 +39,9 @@
    #:image-backend #:backend-formats #:backend-probe #:backend-decode #:backend-encode
    #:register-image-backend #:unregister-image-backend #:image-backends
    #:*backend-preference* #:supported-formats #:*strict-options*
+   ;; editing operations
+   #:crop-image #:rotate-image #:flip-image #:resize-image #:thumbnail #:fit-image
+   #:composite-image
+   #:+resize-filters+
    ;; api
    #:probe-image #:decode-image #:decode-frames #:map-frames #:encode-image))
