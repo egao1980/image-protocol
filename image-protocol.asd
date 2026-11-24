@@ -1,6 +1,6 @@
 (defsystem "image-protocol"
-  :version "0.1.0"
-  :description "CLOS image decoding/encoding protocol for cl-stack: pixels, limits, sniffing, conversion, orientation, multi-backend dispatch"
+  :version "0.2.0"
+  :description "CLOS image decoding/encoding protocol for cl-stack: pixels, limits, sniffing, conversion, orientation, multi-backend dispatch, resize/fit/crop/rotate"
   :author "egao1980"
   :license "MIT"
   :depends-on ("bordeaux-threads")
@@ -15,7 +15,8 @@
                (:file "convert")
                (:file "exif")
                (:file "registry")
-               (:file "api"))
+               (:file "api")
+               (:file "ops"))
   :in-order-to ((test-op (test-op "image-protocol/tests"))))
 
 (defsystem "image-protocol/tests"
@@ -25,7 +26,8 @@
   :components ((:file "package")
                (:file "mock-backend")
                (:file "core-test")
-               (:file "api-test"))
+               (:file "api-test")
+               (:file "ops-test"))
   :perform (test-op (o c)
              (unless (symbol-call :rove :run c)
                (error "tests failed for ~A" (component-name c)))))

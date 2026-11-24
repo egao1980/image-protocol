@@ -37,6 +37,18 @@
                                  (image-limit-exceeded-limit c) (image-limit-exceeded-actual c)
                                  (image-limit-exceeded-allowed c)))))
 
+(define-condition image-invalid-region (image-error)
+  ((region :initarg :region :reader image-invalid-region-region)
+   (bounds :initarg :bounds :reader image-invalid-region-bounds))
+  (:documentation "CROP-IMAGE was given a region, (x y width height), that does not
+lie inside the image, whose size BOUNDS is (width height). Restarts: CLIP-REGION
+(when the region overlaps the image) and USE-VALUE (another region).")
+  (:report (lambda (c s)
+             (destructuring-bind (x y w h) (image-invalid-region-region c)
+               (destructuring-bind (bw bh) (image-invalid-region-bounds c)
+                 (format s "Region ~D × ~D at (~D, ~D) is not inside the ~D × ~D image"
+                         w h x y bw bh))))))
+
 (define-condition image-decode-error (image-error)
   ((cause :initarg :cause :initform nil :reader image-error-cause))
   (:report (lambda (c s) (format s "Could not decode ~(~A~)~@[ with ~A~]~@[: ~A~]"

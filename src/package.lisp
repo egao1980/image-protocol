@@ -13,6 +13,8 @@
    #:image-limit-exceeded-limit #:image-limit-exceeded-allowed #:image-limit-exceeded-actual
    #:image-format-mismatch-declared #:image-format-mismatch-detected
    #:try-next-backend #:use-partial-image
+   #:image-invalid-region #:image-invalid-region-region #:image-invalid-region-bounds
+   #:clip-region
    ;; types
    #:image #:make-image #:image-p #:copy-image
    #:image-width #:image-height #:image-format #:image-depth #:image-pixels
@@ -38,4 +40,7 @@
    #:register-image-backend #:unregister-image-backend #:image-backends
    #:*backend-preference* #:supported-formats #:*strict-options*
    ;; api
-   #:probe-image #:decode-image #:decode-frames #:map-frames #:encode-image))
+   #:probe-image #:decode-image #:decode-frames #:map-frames #:encode-image
+   ;; ops (wave 2)
+   #:resize-image #:fit-image #:fit-dimensions #:crop-image #:rotate-image
+   #:backend-resize #:resize-filter #:rotation-degrees #:+resize-filters+))
