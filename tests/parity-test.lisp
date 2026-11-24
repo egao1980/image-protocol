@@ -62,7 +62,8 @@
 (deftest pillow-parity-resize
   "resize() of L, LA, RGB and RGBA noise with every filter, with and
    without reducing_gap (3/2, 2, 3, and decimals such as 1.7 read as single
-   floats), down, up and one side only."
+   floats), down, up and one side only, and L and RGB reduced 4× and 8×
+   with and without a gap of 2 (image-protocol#9)."
   (let ((cases (%parity-cases :resize))
         (failures '()))
     (dolist (case cases)
@@ -122,3 +123,47 @@
       (ok (equalp pillow got)
           (format nil ":reducing-gap 1.7 (a single float) equals Pillow: ~s"
                   (%difference got pillow))))))
+
+(defun %box-reduce-by-definition (src w h c fx fy)
+  "The block-by-block definition %BOX-REDUCE-8 keeps: for each FX × FY block
+   (narrower or shorter at the right and bottom edges) of N pixels and each
+   channel, ((sum + floor(N / 2)) × division_UINT32(N, 8) mod 2^32) >> 24."
+  (let* ((nw (ceiling w fx)) (nh (ceiling h fy))
+         (dst (make-array (* nw nh c) :element-type '(unsigned-byte 8))))
+    (dotimes (ny nh dst)
+      (dotimes (nx nw)
+        (let* ((x0 (* nx fx)) (x1 (min w (+ x0 fx)))
+               (y0 (* ny fy)) (y1 (min h (+ y0 fy)))
+               (n (* (- x1 x0) (- y1 y0)))
+               (multiplier (image-protocol::%reduce-multiplier n)))
+          (dotimes (ch c)
+            (let ((sum (floor n 2)))
+              (loop for y from y0 below y1
+                    do (loop for x from x0 below x1
+                             do (incf sum (aref src (+ ch (* c (+ x (* y w))))))))
+              (setf (aref dst (+ ch (* c (+ nx (* ny nw)))))
+                    (ash (logand (* sum multiplier) #xFFFFFFFF) -24)))))))))
+
+(deftest box-reduce-equals-definition
+  "image-protocol#9: %BOX-REDUCE-8, the box reduce of :reducing-gap, reads
+   the source row by row with one sum per channel. Its samples and size
+   equal the block-by-block definition for 1-4 channels, every factor from
+   1 to 9 on each axis, whole and partial edge blocks, and 1-pixel-wide or
+   -high images. (Pillow parity of the gap itself: PILLOW-PARITY-RESIZE.)"
+  (let ((failures '()) (n 0))
+    (dolist (size '((1 1) (1 9) (9 1) (7 5) (37 23) (64 48) (65 49) (117 9)))
+      (destructuring-bind (w h) size
+        (loop for c from 1 to 4
+              for src = (%lcg-noise (* w h c) (+ w (* 100 h) (* 10000 c)))
+              do (loop for fx from 1 to (min w 9)
+                       do (loop for fy from 1 to (min h 9)
+                                do (incf n)
+                                   (multiple-value-bind (got gw gh)
+                                       (image-protocol::%box-reduce-8 src w h c fx fy)
+                                     (unless (and (= gw (ceiling w fx)) (= gh (ceiling h fy))
+                                                  (equalp got (%box-reduce-by-definition
+                                                               src w h c fx fy)))
+                                       (push (list w h c fx fy) failures))))))))
+    (ok (and (plusp n) (null failures))
+        (format nil "~d box reduces equal the definition~@[; these differ (w h c fx fy): ~s~]"
+                n (reverse failures)))))

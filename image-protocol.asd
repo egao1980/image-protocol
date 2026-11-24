@@ -1,5 +1,5 @@
 (defsystem "image-protocol"
-  :version "0.3.0"
+  :version "0.3.1"
   :description "CLOS image decoding/encoding protocol for cl-stack: pixels, limits, sniffing, conversion, orientation, editing operations, multi-backend dispatch, a backend hook for native resizing"
   :author "egao1980"
   :license "MIT"

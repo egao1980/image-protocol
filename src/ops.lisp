@@ -310,31 +310,67 @@ truncated."
 FX × FY block (a partial block at the right or bottom edge averages what it
 holds) as ((sum + n/2) × division_UINT32(n, 8)) >> 24 in 32-bit unsigned
 arithmetic, which every one of Pillow's reduce variants computes.
+SRC is read once, in order (image-protocol#9): the source rows of an output
+row are added column by column into COLUMNS, then each block's columns are
+added with one sum per channel. Sums wrap at 2^32 as Pillow's UINT32 sums
+do; the result depends only on the sum mod 2^32 anyway.
 → (values octets width height)."
-  (declare (type octets src) (type fixnum w h c fx fy))
+  (declare (type octets src) (type fixnum w h fx fy) (type (integer 1 4) c)
+           (optimize speed))
   (let* ((nw (ceiling w fx)) (nh (ceiling h fy))
+         (row (* w c))
          (dst (make-array (* nw nh c) :element-type '(unsigned-byte 8)))
-         (full (* fx fy))
-         (full-multiplier (%reduce-multiplier full)))
-    (declare (type fixnum nw nh full))
-    (dotimes (ny nh)
-      (dotimes (nx nw)
-        (let* ((x0 (* nx fx)) (x1 (min w (+ x0 fx)))
-               (y0 (* ny fy)) (y1 (min h (+ y0 fy)))
-               (n (* (- x1 x0) (- y1 y0)))
-               (multiplier (if (= n full) full-multiplier (%reduce-multiplier n)))
-               (amend (floor n 2)))
-          (declare (type fixnum x0 x1 y0 y1 n amend)
-                   (type (unsigned-byte 32) multiplier))
-          (dotimes (ch c)
-            (let ((sum amend))
-              (declare (type fixnum sum))
-              (loop for y of-type fixnum from y0 below y1
-                    do (loop for x of-type fixnum from x0 below x1
-                             do (incf sum (aref src (+ (* (+ (* y w) x) c) ch)))))
-              (setf (aref dst (+ (* (+ (* ny nw) nx) c) ch))
-                    (ash (logand (* sum multiplier) #xFFFFFFFF) -24)))))))
-    (values dst nw nh)))
+         (columns (make-array row :element-type '(unsigned-byte 32)))
+         (whole (floor w fx))            ; blocks FX wide in each row
+         (edge (- w (* whole fx)))       ; the width of a last, narrower block, or 0
+         (y 0) (p 0) (q 0))
+    (declare (type fixnum nw nh row whole edge y p q)
+             (type (simple-array (unsigned-byte 32) (*)) columns))
+    (dotimes (ny nh (values dst nw nh))
+      (let ((rows (min fy (- h y))))
+        (declare (type fixnum rows))
+        (dotimes (j row)
+          (setf (aref columns j) (aref src (+ p j))))
+        (incf p row)
+        (loop repeat (1- rows)
+              do (dotimes (j row)
+                   (setf (aref columns j)
+                         (logand #xFFFFFFFF (+ (aref columns j) (aref src (+ p j))))))
+                 (incf p row))
+        (incf y rows)
+        (let* ((n-whole (* rows fx))
+               (n-edge (* rows edge))
+               (m-whole (%reduce-multiplier n-whole))
+               (m-edge (if (plusp edge) (%reduce-multiplier n-edge) 0))
+               (a-whole (logand #xFFFFFFFF (floor n-whole 2)))
+               (a-edge (logand #xFFFFFFFF (floor n-edge 2)))
+               (i 0))
+          (declare (type fixnum n-whole n-edge i)
+                   (type (unsigned-byte 32) m-whole m-edge a-whole a-edge))
+          (macrolet ((blocks (nc)
+                       ;; This output row's blocks, with one sum per channel.
+                       (let ((sums (loop repeat nc collect (gensym "SUM"))))
+                         `(flet ((one-block (width multiplier amend)
+                                   (declare (type fixnum width)
+                                            (type (unsigned-byte 32) multiplier amend))
+                                   (let ,(loop for s in sums collect `(,s amend))
+                                     (declare (type (unsigned-byte 32) ,@sums))
+                                     (dotimes (dx width)
+                                       ,@(loop for s in sums for ch from 0
+                                               collect `(setf ,s (logand #xFFFFFFFF
+                                                                         (+ ,s (aref columns (+ i ,ch))))))
+                                       (incf i ,nc))
+                                     ,@(loop for s in sums for ch from 0
+                                             collect `(setf (aref dst (+ q ,ch))
+                                                            (ash (logand #xFFFFFFFF (* ,s multiplier)) -24)))
+                                     (incf q ,nc))))
+                            (declare (inline one-block))
+                            (dotimes (nx whole)
+                              (one-block fx m-whole a-whole))
+                            (when (plusp edge)
+                              (one-block edge m-edge a-edge))))))
+            (ecase c
+              (1 (blocks 1)) (2 (blocks 2)) (3 (blocks 3)) (4 (blocks 4)))))))))
 
 (declaim (inline %muldiv255))
 
