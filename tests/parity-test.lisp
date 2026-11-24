@@ -102,3 +102,22 @@
           (when d
             (push (list* dseed sseed d) failures)))))
     (ok (and (plusp (length cases)) (null failures)) (%report (length cases) failures))))
+
+(deftest pillow-parity-reducing-gap-as-written
+  "evidence (PR #4, round 2): :reducing-gap is documented as \"a real >= 1,
+   as Pillow's reducing_gap\", but Pillow's 1.7 is a double and the Lisp
+   1.7 a user writes is a single float (1.70000005). For 34 → 10 columns
+   Pillow's int(34 / 10 / 1.7) is 2 (3.4 / 1.7 = 2.0), here
+   (truncate (/ 3.4d0 1.7f0)) is 1, so the box reduce is skipped and the
+   samples differ. Pillow 11.3, the L noise of %NOISE-IMAGE (seed 77):
+     im.resize((10, 3), Image.BICUBIC, reducing_gap=1.7).tobytes().hex()"
+  (let ((src (%noise-image :gray 34 3 77))
+        (pillow (%hex-octets "a6789866558862564e50aaac9f885aaf7e4b6b59ac70ad90706c6090a03b")))
+    (ok (equalp pillow (img:image-pixels
+                        (img:resize-image src 10 3 :filter :bicubic :reducing-gap 1.7d0)))
+        "1.7d0 (Python's double) equals Pillow")
+    (let ((got (img:image-pixels
+                (img:resize-image src 10 3 :filter :bicubic :reducing-gap 1.7))))
+      (ok (equalp pillow got)
+          (format nil ":reducing-gap 1.7 (a single float) equals Pillow: ~s"
+                  (%difference got pillow))))))
