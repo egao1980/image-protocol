@@ -61,7 +61,8 @@
 
 (deftest pillow-parity-resize
   "resize() of L, LA, RGB and RGBA noise with every filter, with and
-   without reducing_gap (1.5, 2, 3), down, up and one side only."
+   without reducing_gap (3/2, 2, 3, and decimals such as 1.7 read as single
+   floats), down, up and one side only."
   (let ((cases (%parity-cases :resize))
         (failures '()))
     (dolist (case cases)

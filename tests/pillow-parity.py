@@ -8,6 +8,9 @@ formats, filters and gaps drawn at random), for a local stress run:
     uv run --with pillow==11.3.0 python -I tests/pillow-parity.py --random 3000 > /tmp/parity.sexp
     IMAGE_PROTOCOL_PARITY=/tmp/parity.sexp cl-repo test
 
+Gaps are written as the Lisp test reads them: 2, 3, 3/2, or a decimal
+such as 1.7 that the Lisp reader makes a single float.
+
 Input images are noise from the LCG in NOISE (the Lisp test has the same
 one); alpha below 32 becomes 0 and above 223 becomes 255, so fully
 transparent and opaque pixels are common. Each line is one case:
@@ -47,7 +50,11 @@ def make(mode, channels, w, h, seed):
 
 
 def gap_text(gap):
-    return "nil" if gap is None else {2.0: "2", 3.0: "3", 1.5: "3/2"}[gap]
+    """The gap as the Lisp test writes it: 2, 3, 3/2, or a decimal such as
+    1.7, which the Lisp reader makes a single float (1.70000005)."""
+    if gap is None:
+        return "nil"
+    return {2.0: "2", 3.0: "3", 1.5: "3/2"}.get(gap, repr(gap))
 
 
 def resize_case(fmt, mode, c, w, h, ow, oh, fname, f, gap, seed):
@@ -69,6 +76,16 @@ def fixed_cases():
                 for gap in gaps:
                     resize_case(fmt, mode, c, *size, fname, f, gap, seed)
                     seed += 1
+    # Decimal gaps where Pillow's int(w / out_w / gap) differs from the
+    # quotient with the single float a Lisp user writes (1.7 -> 1.70000005).
+    decimal_gaps = [(34, 3, 10, 3, 1.7), (33, 6, 3, 2, 1.1), (12, 12, 1, 5, 1.2),
+                    (91, 7, 5, 3, 1.3), (81, 20, 3, 4, 2.7), (117, 9, 5, 2, 1.8),
+                    (24, 16, 1, 3, 2.4)]
+    for fmt, mode, c in [m for m in MODES if m[0] in ("gray", "rgb")]:
+        for fname, f in FILTERS[1:]:
+            for w, h, ow, oh, gap in decimal_gaps:
+                resize_case(fmt, mode, c, w, h, ow, oh, fname, f, gap, seed)
+                seed += 1
     rng = random.Random(2)
     for _ in range(300):
         w, h, mw, mh = (rng.randint(1, 40) for _ in range(4))
@@ -91,7 +108,7 @@ def random_cases(n, seed):
         ow, oh = rng.randint(1, 24), rng.randint(1, 24)
         if (w, h) == (ow, oh):
             ow += 1
-        gap = None if fname == "nearest" else rng.choice([None, 2.0, 3.0, 1.5])
+        gap = None if fname == "nearest" else rng.choice([None, 2.0, 3.0, 1.5, 1.1, 1.7, 2.7])
         resize_case(fmt, mode, c, w, h, ow, oh, fname, f, gap, 1000 + i)
     for _ in range(n):
         w, h, mw, mh = (rng.randint(1, 2000) for _ in range(4))

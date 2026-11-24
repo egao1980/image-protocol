@@ -481,12 +481,33 @@ a centre that lands on a pixel edge to the lower pixel, as in Pillow."
             (replace dst src :start1 (* (+ (* y width) x) c) :start2 from :end2 (+ from c))))))
     (%with-pixels image width height dst)))
 
+(defun %decimal-double (number)
+  "NUMBER as the double Python reads from the decimal a Lisp user writes for
+it. A double stays; a rational is rounded to the nearest double (Python's
+float()); another float is read back as a double from the shortest decimal
+that prints it, so the single float 1.7 (1.70000005) gives Python's 1.7,
+not 1.7000000476837158d0."
+  (etypecase number
+    (double-float number)
+    (rational (coerce number 'double-float))
+    (float
+     (let ((text (let ((*read-default-float-format*
+                        (etypecase number
+                          (short-float 'short-float)
+                          (single-float 'single-float)
+                          (long-float 'long-float))))
+                   (prin1-to-string number))))
+       (let ((*read-default-float-format* 'double-float)
+             (*read-eval* nil))
+         (coerce (read-from-string text) 'double-float))))))
+
 (defun %reduce-factor (size out-size reducing-gap)
   "Pillow's int(size / out_size / reducing_gap) or 1, in doubles; 1 without
-REDUCING-GAP."
+REDUCING-GAP. The gap is the double Python reads from the same decimal
+(%DECIMAL-DOUBLE), so a quotient that is exact in Pillow is exact here."
   (if reducing-gap
       (max 1 (truncate (/ (/ (coerce size 'double-float) out-size)
-                          (coerce reducing-gap 'double-float))))
+                          (%decimal-double reducing-gap))))
       1))
 
 (defun %reduced-box-side (size factor)
@@ -567,7 +588,8 @@ sample for sample equal to it. FILTER is one of +RESIZE-FILTERS+: :NEAREST,
 premultiplied by alpha, so transparent pixels do not bleed. REDUCING-GAP (a
 real >= 1, as Pillow's reducing_gap) first box-reduces by the integer factor
 that leaves at least that much resampling to do; faster for large
-reductions. As in Pillow, it applies only to images without alpha (Pillow
+reductions. A float gap is taken as the decimal it prints as, so 1.7 (a
+single float) is Python's 1.7. As in Pillow, it applies only to images without alpha (Pillow
 resizes the premultiplied copy of an RGBA or LA image without it) and not
 to :NEAREST. LINEAR T resamples in linear light instead of sRGB, in floats
 (Pillow has no equivalent). The output size is checked against
