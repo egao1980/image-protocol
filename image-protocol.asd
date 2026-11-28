@@ -1,9 +1,9 @@
 (defsystem "image-protocol"
-  :version "0.3.1"
+  :version "0.3.2"
   :description "CLOS image decoding/encoding protocol for cl-stack: pixels, limits, sniffing, conversion, orientation, editing operations, multi-backend dispatch, a backend hook for native resizing"
   :author "egao1980"
   :license "MIT"
-  :depends-on ("bordeaux-threads")
+  :depends-on ("bordeaux-threads" (:version "buffer-protocol" "0.1.0"))
   :serial t
   :pathname "src"
   :components ((:file "package")

@@ -90,3 +90,24 @@
       (let ((upright (img:decode-image j :orient t)))
         (ok (equal (list (img:image-width upright) (img:image-height upright)) '(2 3)))
         (ok (null (img:image-orientation upright)))))))
+
+(deftest read-source-streams-and-files-in-bulk
+  "#11: streams read straight into a growing vector; files by FILE-LENGTH; the
+   input limit still signals IMAGE-LIMIT-EXCEEDED for both."
+  (let* ((n 300001)
+         (data (let ((v (make-array n :element-type '(unsigned-byte 8))))
+                 (dotimes (i n v) (setf (aref v i) (mod (* i 13) 256)))))
+         (path (uiop:tmpize-pathname (merge-pathnames "img-read-source.bin" (uiop:temporary-directory)))))
+    (unwind-protect
+         (progn
+           (with-open-file (o path :direction :output :element-type '(unsigned-byte 8) :if-exists :supersede)
+             (write-sequence data o))
+           (let ((unlimited (img:make-image-limits :unlimited t))
+                 (small (img:make-image-limits :max-input-bytes 1000)))
+             (ok (equalp data (img::%read-source path unlimited)) "file")
+             (with-open-file (in path :element-type '(unsigned-byte 8))
+               (ok (equalp data (img::%read-source in unlimited)) "stream"))
+             (ok (signals (img::%read-source path small) 'img:image-limit-exceeded) "file over the limit")
+             (with-open-file (in path :element-type '(unsigned-byte 8))
+               (ok (signals (img::%read-source in small) 'img:image-limit-exceeded) "stream over the limit"))))
+      (uiop:delete-file-if-exists path))))
