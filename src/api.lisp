@@ -5,15 +5,19 @@
 MAX-INPUT-BYTES."
   (let ((max (image-limits-max-input-bytes limits)))
     (flet ((from-stream (in)
-             (let ((out (make-array 0 :element-type '(unsigned-byte 8) :adjustable t :fill-pointer 0))
-                   (buf (make-array 65536 :element-type '(unsigned-byte 8))))
-               (loop for n = (read-sequence buf in)
-                     while (plusp n)
-                     do (when (and max (> (+ (length out) n) max))
-                          (error 'image-limit-exceeded :limit :input-bytes :allowed max
-                                                       :actual (+ (length out) n)))
-                        (loop for i below n do (vector-push-extend (aref buf i) out)))
-               (coerce out 'octets))))
+             ;; Read straight into a growing vector (buffer-protocol), not
+             ;; VECTOR-PUSH-EXTEND per byte (#11).
+             (handler-case (stack-buffer:read-stream-octets in :max max)
+               (stack-buffer:buffer-limit-exceeded (e)
+                 (error 'image-limit-exceeded :limit :input-bytes :allowed max
+                                              :actual (stack-buffer:buffer-limit-exceeded-actual e)))))
+           (from-file (in)
+             ;; The size is known: check it first, then one READ-SEQUENCE.
+             (let ((n (file-length in)))
+               (%over :input-bytes max n nil)
+               (let ((out (make-array n :element-type '(unsigned-byte 8))))
+                 (let ((got (read-sequence out in)))
+                   (if (= got n) out (subseq out 0 got)))))))
       (etypecase source
         ((simple-array (unsigned-byte 8) (*))
          (%over :input-bytes max (length source) nil)
@@ -22,7 +26,7 @@ MAX-INPUT-BYTES."
          (%over :input-bytes max (length source) nil)
          (coerce source 'octets))
         ((or pathname string)
-         (with-open-file (in source :element-type '(unsigned-byte 8)) (from-stream in)))
+         (with-open-file (in source :element-type '(unsigned-byte 8)) (from-file in)))
         (stream (from-stream source))))))
 
 (defun %resolve-format (octets format)
